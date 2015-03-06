@@ -28,3 +28,33 @@ coreos:
 
         [Install]
         WantedBy=sockets.target
+    - name: consul.service
+      command: start
+      content: |
+        [Unit]
+        Description=Consul Server
+        After=docker.service
+        After=etcd.service
+        After=fleet.service
+        [Service]
+        Restart=always
+        RestartSec=10
+        ExecStartPre=-/usr/bin/docker kill consul
+        ExecStartPre=-/usr/bin/docker rm consul
+        ExecStartPre=/usr/bin/docker pull progrium/consul
+        ExecStart=/bin/bash -c "eval $(/usr/bin/docker run --rm progrium/consul cmd:run $private_ipv4::172.17.8.101)"
+        ExecStop=/usr/bin/docker stop consul
+    - name: swarm-agent.service
+      command: start
+      content: |
+        [Unit]
+        Description=Docker Swarm Agent
+        After=consul.service
+        [Service]
+        Restart=always
+        RestartSec=10
+        ExecStartPre=-/usr/bin/docker kill swarm-agent
+        ExecStartPre=-/usr/bin/docker rm swarm-agent
+        ExecStartPre=/usr/bin/docker pull swarm
+        ExecStart=/usr/bin/docker run --rm --name swarm-agent swarm join --addr=$private_ipv4:2375 consul://$private_ipv4:8500/swarm
+        ExecStop=/usr/bin/docker stop swarm-agent
