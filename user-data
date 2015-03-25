@@ -1,0 +1,62 @@
+#cloud-config
+
+coreos:
+  etcd:
+    # generate a new token for each unique cluster from https://discovery.etcd.io/new
+    # WARNING: replace each time you 'vagrant destroy'
+    #discovery: https://discovery.etcd.io/<token>
+    addr: $public_ipv4:4001
+    peer-addr: $public_ipv4:7001
+  fleet:
+    public-ip: $public_ipv4
+  flannel:
+    interface: $public_ipv4
+  units:
+    - name: etcd.service
+      command: start
+    - name: docker-tcp.socket
+      command: start
+      enable: true
+      content: |
+        [Unit]
+        Description=Docker Socket for the API
+
+        [Socket]
+        ListenStream=2375
+        Service=docker.service
+        BindIPv6Only=both
+
+        [Install]
+        WantedBy=sockets.target
+    - name: fleet-config.service
+      command: start
+      content: |
+        [Unit]
+        Description=Generate fleet config
+
+        [Service]
+        Type=simple
+        RemainAfterExit=yes
+        Restart=on-failure
+        RestartSec=10s
+        ExecStartPre=/usr/bin/mkdir -p /etc/fleet
+        ExecStart=/bin/bash -c 'case $(curl -s http://icanhazip.com) in %availabilityZone1%) az=1;; %availabilityZone2%) az=2;; *) az=0;; esac; echo metadata="location=$az" > /etc/fleet/fleet.conf'
+    - name: fleet.service
+      command: start
+      content: |
+        [Unit]
+        Description=fleet daemon
+
+        Requires=fleet-config.service
+        After=fleet-config.service
+
+        Wants=etcd.service
+        After=etcd.service
+
+        Wants=fleet.socket
+        After=fleet.socket
+
+        [Service]
+        ExecStart=/usr/bin/fleetd
+        Restart=always
+        RestartSec=10s
