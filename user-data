@@ -51,6 +51,9 @@ coreos:
         [Unit]
         Description=Environment test
         [Service]
-        Environment=ONE=one "TWO=two two"
+        Environment=ONE=one "TWO=two two" THREE=3
         ExecStartPre=/bin/sh -c "/usr/bin/env >/tmp/pre-%p.out"
+        ExecStartPre=/usr/bin/docker run -v /tmp:/tmp alpine /bin/sh -c "/usr/bin/env >/tmp/docker-%p.out"
+        ExecStartPre=/usr/bin/docker run -v /tmp:/tmp -e ONE=${ONE} alpine /bin/sh -c "/usr/bin/env >/tmp/docker1-%p.out"
+        ExecStartPre=/usr/bin/docker run -v /tmp:/tmp -e TWO alpine /bin/sh -c "/usr/bin/env >/tmp/docker2-%p.out"
         ExecStart=/bin/sh -c "/usr/bin/env >/tmp/%p.out"
