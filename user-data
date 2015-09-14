@@ -1,0 +1,276 @@
+#cloud-config
+coreos:
+  update:
+     reboot-strategy: off
+  etcd2:
+    advertise-client-urls: http://$private_ipv4:2379
+    initial-advertise-peer-urls: http://$private_ipv4:2380
+    listen-client-urls: http://0.0.0.0:2379
+    listen-peer-urls: http://$private_ipv4:2380
+  fleet:
+    public-ip: $private_ipv4
+    etcd-servers: "http://127.0.0.1:2379"
+    etcd-request-timeout: 3
+  units:
+    - name: router.service
+      command: start
+      content: |
+        [Unit]
+        Description=Run router
+        After=docker.service
+        Requires=docker.service
+        [Service]
+        Restart=always
+        RestartSec=10s
+        ExecStartPre=-/usr/bin/docker kill %p
+        ExecStartPre=-/usr/bin/docker rm %p
+        ExecStartPre=/usr/bin/docker login -e nobody@null.com -u fleeter -p 5sTZh6OkzPC1nM8osRhk https://docker-registry.agro.services
+        ExecStartPre=/usr/bin/docker pull docker-registry.agro.services/arch/router:master
+        ExecStart=/usr/bin/docker run -e SERVICE=router -e SERVICE_NAME=core/router -e DOCKER_IMAGE=docker-registry.agro.services/arch/router:master -e HOST=%H -e CONTAINER=%n -e ETCD_HOST=etcd.internal.agro.services -e ETCD_PORT=80 --name=%p --log-driver=syslog -p 80:80 docker-registry.agro.services/arch/router:master
+        ExecStop=/usr/bin/docker stop %p
+        [Install]
+        WantedBy=multi-user.target
+    - name: settimezone.service
+      command: start
+      content: |
+        [Unit]
+        Description=Set the timezone
+        [Service]
+        ExecStart=/usr/bin/timedatectl set-timezone UTC
+        RemainAfterExit=yes
+        Type=oneshot
+    - name: etcd2.service
+      command: stop
+    - name: etcd-peers.service
+      command: start
+      content: |
+        [Unit]
+        Description=Write a file with the etcd peers that we should bootstrap to
+        [Service]
+        Restart=on-failure
+        RestartSec=10
+        ExecStartPre=/usr/bin/docker pull monsantoco/etcd-aws-cluster:latest
+        ExecStartPre=/usr/bin/docker run --log-driver=syslog --rm=true -v /etc/sysconfig/:/etc/sysconfig/ monsantoco/etcd-aws-cluster:latest
+        ExecStart=/usr/bin/systemctl start etcd2
+    - name: registrator.service
+      command: start
+      content: |
+        [Unit]
+        Description=Run registrator
+        After=docker.service
+        Requires=docker.service
+        [Service]
+        Restart=always
+        RestartSec=10s
+        ExecStartPre=-/usr/bin/docker kill %p
+        ExecStartPre=-/usr/bin/docker rm %p
+        ExecStartPre=/usr/bin/docker pull gliderlabs/registrator:master
+        ExecStart=/usr/bin/docker run --name=%p --log-driver=syslog -v /var/run/docker.sock:/tmp/docker.sock -h %H gliderlabs/registrator:master -ip $private_ipv4 -resync 60 etcd://etcd.internal.agro.services/services
+        ExecStop=/usr/bin/docker stop %p
+        [Install]
+        WantedBy=multi-user.target
+    - name: journal-ship.service
+      command: start
+      content: |
+        [Unit]
+        Description=journal logs forwarder
+        [Service]
+        Restart=always
+        RestartSec=10s
+        ExecStart=/bin/sh -c "journalctl -o json -f | ncat logstash.internal.agro.services 5004"
+        [Install]
+        WantedBy=multi-user.target
+    - name: logspout.service
+      command: start
+      content: |
+        [Unit]
+        Description=Logspout Docker log shipper
+        Requires=docker.service
+        After=docker.service
+        [Service]
+        Restart=always
+        RestartSec=10s
+        ExecStartPre=/bin/sh -c "docker inspect %p &>/dev/null && docker rm -f %p || true"
+        ExecStartPre=/usr/bin/docker login -e nobody@null.com -u fleeter -p 5sTZh6OkzPC1nM8osRhk https://docker-registry.agro.services
+        ExecStartPre=/usr/bin/docker pull docker-registry.agro.services/arch/logspout
+        ExecStart=/usr/bin/docker run -h %H --name=%p --log-driver=syslog -p 8001:80 -v=/var/run/docker.sock:/tmp/docker.sock -e ROUTE_URIS=logstash://logstash.internal.agro.services:5002 docker-registry.agro.services/arch/logspout
+        ExecStop=-/usr/bin/docker stop %p
+        [Install]
+        WantedBy=multi-user.target
+    - name: logrotate.service
+      command: start
+      content: |
+        [Unit]
+        Description=Log rotation for CoreOS
+        Wants=docker.service
+        After=docker.service
+        [Service]
+        Restart=always
+        RestartSec=10s
+        ExecStartPre=-/usr/bin/docker kill %p
+        ExecStartPre=-/usr/bin/docker rm %p
+        ExecStartPre=/usr/bin/docker login -e nobody@null.com -u fleeter -p 5sTZh6OkzPC1nM8osRhk https://docker-registry.agro.services
+        ExecStartPre=/usr/bin/docker pull docker-registry.agro.services/monsantoco/logrotate
+        ExecStart=/usr/bin/docker run --name=%p --log-driver=syslog -v /var/lib/docker/containers/:/var/lib/docker/containers/:rw docker-registry.agro.services/monsantoco/logrotate /usr/sbin/cron -f
+        ExecStop=-/usr/bin/docker stop %p
+        [Install]
+        WantedBy=multi-user.target
+    - name: fleet.service
+      command: start
+      content: |
+        [Unit]
+        Description=fleet daemon
+        Wants=etcd2.service
+        After=etcd2.service
+        Wants=fleet.socket
+        After=fleet.socket
+        [Service]
+        ExecStartPre=/usr/bin/mkdir -p /etc/fleet
+        ExecStartPre=/bin/bash -c 'case $(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone) in us-east-1a) az=1;; us-east-1b) az=2;; *) exit 1;; esac; echo metadata="location=$az" > /etc/fleet/fleet.conf'
+        ExecStart=/usr/bin/fleetd
+        Restart=always
+        RestartSec=10s
+    - name: dj.timer
+      command: start
+      enable: yes
+      content: |
+        [Unit]
+        Description=Runs DJ (Docker Janitor) on schedule
+        Requires=docker.service
+        After=docker.service
+        [Timer]
+        OnBootSec=1d
+        OnCalendar=01:00
+        Persistent=true
+        [Install]
+        WantedBy=multi-user.target
+    - name: dj.service
+      command: start
+      content: |
+        [Unit]
+        Description=Docker container management
+        Requires=docker.service
+        After=docker.service
+        [Service]
+        TimeoutStartSec=5m
+        Restart=on-failure
+        RestartSec=10s
+        ExecStartPre=/bin/sh -c "docker inspect %p &>/dev/null && docker rm -f %p || true"
+        ExecStartPre=/usr/bin/docker pull remmelt/docker-gc:latest
+        ExecStart=/usr/bin/docker run --name=%p --log-driver=syslog -v /var/run/docker.sock:/var/run/docker.sock remmelt/docker-gc:latest
+        ExecStop=/usr/bin/docker stop %p
+        ExecStopPost=-/usr/bin/docker rm %p
+        [Install]
+        WantedBy=multi-user.target
+        [X-Fleet]
+        MachineOf=dj.timer
+    - name: cadvisor.service
+      command: start
+      content: |
+        [Unit]
+        Description=cAdvisor Container Monitoring
+        Requires=docker.service
+        After=docker.service
+        [Service]
+        Restart=always
+        RestartSec=10s
+        ExecStartPre=-/usr/bin/docker kill %p
+        ExecStartPre=-/usr/bin/docker rm %p
+        ExecStartPre=/usr/bin/docker pull google/cadvisor:latest
+        ExecStart=/usr/bin/docker run --name=%p --log-driver=syslog -v /:/rootfs:ro -v /var/run:/var/run:rw -v /sys:/sys:ro -v /var/lib/docker/:/var/lib/docker:ro -p 8080:8080 google/cadvisor:latest
+        ExecStop=/usr/bin/docker stop %p
+        [Install]
+        WantedBy=multi-user.target
+    - name: node-exporter.service
+      command: start
+      content: |
+        [Unit]
+        Description=Node Exporter Host Monitoring
+        Requires=docker.service
+        After=docker.service
+        [Service]
+        Restart=always
+        RestartSec=10s
+        TimeoutStartSec=10m
+        ExecStartPre=-/usr/bin/docker kill %p
+        ExecStartPre=-/usr/bin/docker rm %p
+        ExecStartPre=/usr/bin/docker pull prom/node-exporter
+        ExecStart=/usr/bin/docker run -p 8181:9100 --name=%p --log-driver=syslog prom/node-exporter
+        ExecStop=/usr/bin/docker stop %p
+        [Install]
+        WantedBy=multi-user.target
+    - name: deployment-service.service
+      command: start
+      content: |
+        [Unit]
+        After=docker.service
+        Requires=docker.service
+        [Service]
+        Restart=always
+        RestartSec=10s
+        ExecStartPre=-/usr/bin/docker kill %p
+        ExecStartPre=-/usr/bin/docker rm %p
+        ExecStartPre=/usr/bin/docker login -e nobody@null.com -u fleeter -p 5sTZh6OkzPC1nM8osRhk https://docker-registry.agro.services
+        ExecStartPre=/usr/bin/docker pull docker-registry.agro.services/arch/deployment-service:master
+        ExecStart=/usr/bin/docker run -e SOA_REGISTRATION_API_KEY=enterpriseapi-opGtMFsuHGaGOrtqVTRk6Eo3 -e CONTRACT_CLIENT=StaaS-Agent-SVC -e CONTRACT_SECRET=i348jfIWjfsb89bxowksoobowid8hbdcuiojknedsvc9uhjqwkUjesdoijk -e VPC_URL=https://djdoolmaster.agro.services -e VPC_NAME=vpc-stax-39895-telpherage -e DOCKER_USER=fleeter -e DOCKER_PASS=5sTZh6OkzPC1nM8osRhk -e HOST=%H -e CONTAINER=%n -e SERVICE=deployment-service -e SERVICE_NAME=core/deployment-service --name=%p -P docker-registry.agro.services/arch/deployment-service:master
+        ExecStop=/usr/bin/docker stop %p
+        [Install]
+        WantedBy=multi-user.target
+    - name: route-updater.service
+      command: start
+      content: |
+        [Unit]
+        After=docker.service
+        Requires=docker.service
+        [Service]
+        Restart=always
+        RestartSec=10
+        ExecStartPre=-/usr/bin/docker kill %p
+        ExecStartPre=-/usr/bin/docker rm %p
+        ExecStartPre=/usr/bin/docker login -e nobody@null.com -u fleeter -p 5sTZh6OkzPC1nM8osRhk https://docker-registry.agro.services
+        ExecStartPre=/usr/bin/docker pull docker-registry.agro.services/arch/route-updater:master
+        ExecStart=/bin/sh -c "/usr/bin/docker run --name=%p -e SERVICE=route-updater -e SERVICE_NAME=core/route-updater -e DOCKER_IMAGE=docker-registry.agro.services/arch/route-updater:master -e HOST=%H -e CONTAINER=%n --add-host=dockerhost:`ip route | awk '/docker0/ { print $NF }'` -P docker-registry.agro.services/arch/route-updater:master"
+        ExecStop=/usr/bin/docker stop %p
+        [Install]
+        WantedBy=multi-user.target
+    - name: staas-agent.service
+      command: start
+      content: |
+        [Unit]
+        Description=StaaS agent service
+        After=docker.service
+        Requires=docker.service
+        [Service]
+        TimeoutStartSec=0
+        Restart=always
+        RestartSec=10
+        ExecStartPre=-/usr/bin/docker kill %p
+        ExecStartPre=-/usr/bin/docker rm %p
+        ExecStartPre=/usr/bin/docker login -e nobody@null.com -u fleeter -p 5sTZh6OkzPC1nM8osRhk https://docker-registry.agro.services
+        ExecStartPre=/usr/bin/docker pull docker-registry.agro.services/arch/staas-agent:master
+        ExecStart=/usr/bin/docker run -e SOA_REGISTRATION_API_KEY=enterpriseapi-opGtMFsuHGaGOrtqVTRk6Eo3 -e CONTRACT_CLIENT=StaaS-Agent-SVC -e CONTRACT_SECRET=i348jfIWjfsb89bxowksoobowid8hbdcuiojknedsvc9uhjqwkUjesdoijk -e VPC_URL=https://djdoolmaster.agro.services -e VPC_NAME=vpc-stax-39895-telpherage -e HOST=%H -e CONTAINER=%n -e SERVICE_NAME=core/staas-agent -e SERVICE=staas-agent --name=%p -P docker-registry.agro.services/arch/staas-agent:master
+        ExecStop=/usr/bin/docker stop %p
+        [Install]
+        WantedBy=multi-user.target
+write_files:
+  - path: /etc/ntp.conf
+    content: |
+      server 0.pool.ntp.org
+      server 1.pool.ntp.org
+      server 2.pool.ntp.org
+      server 3.pool.ntp.org
+      restrict default nomodify nopeer noquery limited kod
+      restrict 127.0.0.1
+  - path: /etc/systemd/system/fleet.socket.d/30-fleet_listen41337.conf
+    permissions: 0644
+    content: |
+      [Socket]
+      ListenStream=41337
+      BindIPv6Only=both
+      Service=fleet.service
+  - path: /etc/systemd/system/etcd2.service.d/30-etcd_peers.conf
+    permissions: 0644
+    content: |
+      [Service]
+      # Load the other hosts in the etcd leader autoscaling group from file
+      EnvironmentFile=/etc/sysconfig/etcd-peers
