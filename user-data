@@ -1,0 +1,93 @@
+#cloud-config
+
+---
+coreos:
+  etcd2:
+    advertise-client-urls: http://$public_ipv4:2379
+    initial-advertise-peer-urls: http://$private_ipv4:2380
+    listen-client-urls: http://0.0.0.0:2379,http://0.0.0.0:4001
+    listen-peer-urls: http://$private_ipv4:2380,http://$private_ipv4:7001
+    discovery: https://discovery.etcd.io/4bfc1b938363030620f7c61c906c3392
+  fleet:
+    public-ip: $public_ipv4
+  flannel:
+    interface: $public_ipv4
+  units:
+  - name: etcd2.service
+    command: start
+  - name: fleet.service
+    command: start
+  - name: flanneld.service
+    drop-ins:
+    - name: 50-network-config.conf
+      content: |
+        [Service]
+        ExecStartPre=/usr/bin/etcdctl set /coreos.com/network/config '{ "Network": "10.1.0.0/16" }'
+    command: start
+  - name: docker-tcp.socket
+    command: start
+    enable: true
+    content: |
+      [Unit]
+      Description=Docker Socket for the API
+
+      [Socket]
+      ListenStream=2375
+      Service=docker.service
+      BindIPv6Only=both
+
+      [Install]
+      WantedBy=sockets.target
+  - name: dd-notify.service
+    command: start
+    enable: true
+    content: |
+      [Unit]
+      Requires=docker.service
+      After=docker.service
+      [Service]
+      Type=notify
+      NotifyAccess=all
+      TimeoutStartSec=5m
+      Restart=on-failure
+      RestartSec=10s
+      ExecStart=/tmp/dd-notify-service
+      ExecStop=/usr/bin/pkill dd-notify-service
+      [Install]
+      WantedBy=multi-user.target
+  - name: dd-receiver.service
+    command: start
+    enable: true
+    content: |
+      [Unit]
+      Requires=dd-notify.service
+      After=dd-notify.service
+      [Service]
+      Restart=always
+      RestartSec=10s
+      ExecStart=/tmp/dd-receiver-service
+      ExecStop=/usr/bin/pkill dd-receiver-service
+      [Install]
+      WantedBy=multi-user.target
+write_files:
+- path: /tmp/dd-notify-service
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    sleep 15
+    while ! systemctl status dd-notify > /dev/null 2>&1; do
+        echo "dd-notify: notifying systemd"
+        systemd-notify --ready
+        sleep 10
+    done
+    sleep infinity
+- path: /tmp/dd-receiver-service
+  permissions: '0755'
+  content: |
+    #!/bin/bash
+    while ! systemctl status dd-notify > /dev/null 2>&1; do
+        echo "dd-receiver: dd-notify is not ready!"
+        exit 1
+    done
+    echo "dd-receiver: dd-notify is ready"
+    sleep infinity
