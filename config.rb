@@ -10,7 +10,11 @@ if File.exists?('user-data') && ARGV[0].eql?('up')
   require 'open-uri'
   require 'yaml'
 
-  token = open($new_discovery_url).read
+  if $num_instances > 1
+    token = open($new_discovery_url).read
+  else
+    token = "1242323545234abcfed"
+  end
 
   data = YAML.load(IO.readlines('user-data')[1..-1].join)
 
