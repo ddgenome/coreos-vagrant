@@ -13,7 +13,7 @@ if File.exists?('user-data') && ARGV[0].eql?('up')
   if $num_instances > 1
     token = open($new_discovery_url).read
   else
-    token = "1242323545234abcfed"
+    token = 'https://discovery.etcd.io/69251ba900948150041659a208e5da24'
   end
 
   data = YAML.load(IO.readlines('user-data')[1..-1].join)
@@ -58,7 +58,6 @@ end
 
 # Official CoreOS channel from which updates should be downloaded
 #$update_channel='alpha'
-$update_channel='alpha'
 
 # Log the serial consoles of CoreOS VMs to log/
 # Enable by setting value to true, disable with false
@@ -83,6 +82,7 @@ $expose_docker_tcp=2375
 #$vm_gui = false
 #$vm_memory = 1024
 #$vm_cpus = 1
+#$vb_cpuexecutioncap = 100
 
 # Share additional folders to the CoreOS VMs
 # For example,
