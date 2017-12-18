@@ -10,7 +10,7 @@ if File.exists?('user-data') && ARGV[0].eql?('up')
   require 'open-uri'
   require 'yaml'
 
-  if $num_instances > 1
+  if $num_instances > 0
     token = open($new_discovery_url).read
   else
     token = 'https://discovery.etcd.io/69251ba900948150041659a208e5da24'
